@@ -1,0 +1,17 @@
+.github
+.gitignore
+
+old_cogs/
+
+LICENSE
+
+README.md
+
+.env*
+
+*.log
+id_record.txt
+
+docker-compose.yml
+
+pm2.json

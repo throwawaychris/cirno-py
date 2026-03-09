@@ -1,0 +1,282 @@
+import datetime
+import asyncio
+import aiohttp
+
+import discord
+from discord.ext import commands, tasks
+from discord import option
+
+from utils import log, http
+from utils.config import Config
+
+logger = log.Logger(__name__)
+
+class Booru(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await logger.on_load(__class__.__name__)
+        
+        if Config.BOT_TAWAWA_AUTOSTART:
+            await self.check_monday_tawawa.start()
+
+    async def _process_tawawa(self, id = None):
+        booru_url = "https://danbooru.donmai.us/posts"
+        tawawa_icon_url = "https://pbs.twimg.com/profile_images/557819686662844416/RMwCGmCU_400x400.png"
+        tawawa_author = "比村奇石 (@Strangestone)"
+
+        if id:
+            r_url = f"{booru_url}/{id}.json"    
+
+        if not id:
+            r_url = f"{booru_url}.json?tags=himura_kiseki+getsuyoubi_no_tawawa"
+
+        try:
+            r = await http.get(r_url, "json")
+        except Exception as e:
+            await logger.error(f"Couldn't fetch http: {e}")
+            raise Exception("Couldn't get ") from e
+
+        if "success" in r.response:
+            raise Exception("Bad tags or ID...") from None
+        
+        if not id:
+            tawawa_res = r.response[0]
+        else:
+            tawawa_res = r.response
+
+        r_url = f"{booru_url}/{tawawa_res["id"]}/artist_commentary.json"
+
+        try: 
+            c = await http.get(r_url, "json")
+        except Exception as e:
+            raise Exception("Couldn't get commentary...") from e
+
+        if "success" in c.response:
+            tawawa_title = "月曜日のたわわ"
+            tawawa_desc = "(No translation yet!)"
+        else:
+            tawawa_title = c.response["original_title"]
+            tawawa_desc = c.response["translated_title"]
+
+        # Construct embed
+        tawawa_embed = discord.Embed(
+            title = tawawa_title,
+            description = tawawa_desc,
+            url = f"{booru_url}/{tawawa_res["id"]}",
+            color = discord.Colour.blue()
+        )
+        tawawa_embed.set_author(name = tawawa_author)
+        tawawa_embed.set_image(url = tawawa_res["source"])
+        tawawa_embed.set_thumbnail(url = tawawa_icon_url)
+        tawawa_embed.set_footer(text = f"{tawawa_res["created_at"]} / (ID: {tawawa_res["id"]})")
+
+        return tawawa_embed
+
+    async def _process_booru(self, booru:str, colour, tags:str = None, id = None):
+        booru_url = f"https://{booru}.donmai.us/posts"
+        booru_icon_url = "https://danbooru.donmai.us/packs/static/danbooru-logo-128x128-ea111b6658173e847734.png"
+
+        # Handle options for http get url
+        if tags:
+            r_url = f"{booru_url}/random.json?tags={tags}"
+        
+        if not tags:
+            r_url = f"{booru_url}/random.json"
+
+        if id:
+            r_url = f"{booru_url}/{id}.json"
+        
+        # Get post response:
+        try:
+            r = await http.get(r_url, "json")
+        except Exception as e:
+            raise Exception("Couldn't get post...") from e
+
+        if "success" in r.response:
+            raise Exception("Bad tags or ID...") from None
+        
+        # Get artist commentary response:
+        r_url = f"{booru_url}/{r.response["id"]}/artist_commentary.json"
+
+        try: 
+            c = await http.get(r_url, "json")
+        except Exception as e:
+            raise Exception("Couldn't get commentary...") from e
+        
+        if "success" in c.response:
+            booru_title = r.response["tag_string_artist"]
+            booru_desc = None
+        else:
+            booru_title = c.response["original_title"]
+            booru_desc = c.response["original_description"]
+
+        # Construct embed:
+        booru_embed = discord.Embed(
+            title = booru_title,
+            description = booru_desc,
+            url = f"{booru_url}/{r.response["id"]}",
+            color = colour
+        )
+        booru_embed.set_author(name = r.response["tag_string_artist"], icon_url = booru_icon_url)
+        booru_embed.set_image(url = r.response["file_url"])
+        booru_embed.set_thumbnail(url = booru_icon_url)
+        booru_embed.set_footer(text = f"{r.response["created_at"]} / (ID: {r.response["id"]})")
+        booru_embed.add_field(name = "Copyright", value = r.response["tag_string_copyright"])
+        booru_embed.add_field(name = "Character", value = r.response["tag_string_character"])
+
+        return booru_embed
+
+    # Danbooru:
+    @commands.slash_command(
+        name = "danbooru",
+        description = "Get a danbooru post; random if no inputs",
+    )
+    @option("tags", description = "Tags to search", required = False)
+    @option("id", description = "Post ID to get", required = False)
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def danbooru(self, ctx, tags, id):
+        """
+        Get a danbooru post; random if no tags or id.
+        """
+        await logger.on_execute(ctx.command.name, ctx.author)
+        
+        try:
+            embed = await self._process_booru("danbooru", discord.Colour.orange(), tags, id)
+            await ctx.respond(embed = embed)
+
+        except Exception as e:
+            await ctx.respond(f"***{e}***", ephemeral = True)
+
+    # Safebooru:
+    @commands.slash_command(
+        name = "safebooru",
+        description = "Get a safebooru post; random if no inputs",
+    )
+    @option("tags", description = "Tags to search", required = False)
+    @option("id", description = "Post ID to get", required = False)
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def safebooru(self, ctx, tags, id):
+        """
+        Get a safebooru post; random if no tags or id.
+        """
+        await logger.on_execute(ctx.command.name, ctx.author)
+        
+        try:
+            embed = await self._process_booru("safebooru", discord.Colour.blue(), tags, id)
+            await ctx.respond(embed = embed)
+
+        except Exception as e:
+            await ctx.respond(f"***{e}***", ephemeral = True)
+
+
+
+    tawawa = discord.SlashCommandGroup("tawawa", "tawawa task related commands")
+
+    # Tawawa:
+    @tawawa.command(name = "get", description = "Get a tawawa post; latest if no id")
+    @option("id", description = "Post ID to get", required = False)
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def gettawawa(self, ctx, id):
+        """
+        Get a safebooru post; random if no tags or id.
+        """
+        await logger.on_execute(ctx.command.name, ctx.author)
+        
+        try:
+            embed = await self._process_tawawa(id)
+            await ctx.respond(embed = embed)
+
+        except Exception as e:
+            await ctx.respond(f"***{e}***", ephemeral = True)
+
+    @tasks.loop(time = datetime.time(hour=8,minute=0, tzinfo=datetime.timezone.utc))
+    async def check_monday_tawawa(self):
+        if datetime.date.today().weekday() == 0:
+
+            await logger.info("Tawawa task is being triggered...")
+
+            try:
+                ch = await self.bot.fetch_channel(Config.BOT_TAWAWA_CHANNEL_ID)
+                embed = await self._process_tawawa()
+
+                await ch.send(f"***It's Monday!*** <@{self.bot.owner_id}>", embed = embed)
+            
+            except Exception as e:
+                await ch.send(f"<@{self.bot.owner_id}> Task error: ***{e}***")
+
+    @check_monday_tawawa.before_loop
+    async def before_check_monday_tawawa(self):
+        await self.bot.wait_until_ready()
+
+    @check_monday_tawawa.after_loop
+    async def after_check_monday_tawawa(self):
+        await logger.info(f"{self.bot}")
+
+    @check_monday_tawawa.error
+    async def cancel_check_monday_tawawa(self, error):
+        await logger.error(f"tawawa task is being cancelled; error: {error}...")
+        await self.check_monday_tawawa.stop()
+
+    @tawawa.command(name = "start", description = "Start the tawawa task")
+    @commands.is_owner()
+    @commands.cooldown(1, 60, commands.BucketType.guild)
+    async def start(self, ctx):
+        """
+        Start the task to get tawawa chapter every monday
+        """
+        await logger.on_execute(f"tawawa.{ctx.command.name}", ctx.author)
+        
+        if not self.check_monday_tawawa.is_running():
+            self.check_monday_tawawa.start()
+            await ctx.respond("Started checking for tawawa!", ephemeral = True)
+
+        else:
+            await ctx.respond("Task is already running!", ephemeral = True)
+
+    @tawawa.command(name = "stop", description = "Stop the tawawa task")
+    @commands.is_owner()
+    async def stop(self, ctx):
+        """
+        Stop the tawawa task
+        """
+        await logger.on_execute(f"tawawa.{ctx.command.name}", ctx.author)
+        
+        if self.check_monday_tawawa.is_running():
+            self.check_monday_tawawa.stop()
+            await ctx.respond("Stopped checking for tawawa...", ephemeral = True)
+
+        else:
+            await ctx.respond("Task isn't running!", ephemeral = True)
+
+    @tawawa.command(name = "cancel", description = "Cancel the tawawa task")
+    @commands.is_owner()
+    async def cancel(self, ctx):
+        """
+        Cancel the tawawa task
+        """
+        await logger.on_execute(f"tawawa.{ctx.command.name}", ctx.author)
+        
+        if self.check_monday_tawawa.is_running():
+            self.check_monday_tawawa.cancel()
+            await ctx.respond("Terminated tawawa task...", ephemeral = True)
+
+        else:
+            await ctx.respond("Task isn't running!", ephemeral = True)
+
+    @tawawa.command(name = "restart", description = "Restart the tawawa task")
+    @commands.is_owner()
+    @commands.cooldown(1, 60, commands.BucketType.guild)
+    async def restart(self, ctx):
+        """
+        Restart the tawawa task
+        """
+        await logger.on_execute(f"tawawa.{ctx.command.name}", ctx.author)
+
+        self.check_monday_tawawa.restart()
+        await ctx.respond("Restarted tawawa...", ephemeral = True)
+
+def setup(bot: commands.Bot):
+    bot.add_cog(Booru(bot))

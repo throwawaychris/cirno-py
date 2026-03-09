@@ -1,0 +1,7 @@
+services:
+  bot:
+    restart: unless-stopped
+    container_name: cirnopy2
+    build: .
+    volumes:
+      - ./.env:/discord_bot/.env
